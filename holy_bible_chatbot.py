@@ -5,11 +5,16 @@ from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.runnables.history import RunnableWithMessageHistory
 from langchain_core.output_parsers import StrOutputParser
 from langchain_community.chat_message_histories import SQLChatMessageHistory
-from langchain_community.document_loaders import PyPDFLoader
+
+try:
+    from langchain_community.document_loaders import PyPDFLoader
+except ImportError:
+    raise ImportError("`PyPDFLoader` requires `pypdf`. Please install it using `pip install pypdf`.")
+
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 
-# Ensure faiss-cpu is installed
-# pip install faiss-cpu
+# Ensure faiss-cpu and pypdf are installed
+# pip install faiss-cpu pypdf
 
 # Step 1: Load and preprocess the PDF
 pdf_path = "The-Holy-Bible-King-James-Version.pdf"
@@ -17,7 +22,7 @@ db_name = "Holy_Bible_DB"
 
 @st.cache_resource
 def process_and_index_pdf(pdf_path, db_name):
-    # Extract text from PDF
+    """Extracts text from the PDF, splits it into chunks, and builds the FAISS index."""
     loader = PyPDFLoader(pdf_path)
     documents = loader.load()
 
@@ -108,4 +113,7 @@ if query:
             )
     except AssertionError as e:
         st.error("Error: Embedding dimensions do not match. Please re-index the data.")
+        st.write(f"Details: {e}")
+    except Exception as e:
+        st.error("An unexpected error occurred while processing your query.")
         st.write(f"Details: {e}")
