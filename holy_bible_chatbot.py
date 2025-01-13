@@ -5,6 +5,8 @@ from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.runnables.history import RunnableWithMessageHistory
 from langchain_core.output_parsers import StrOutputParser
 from langchain_community.chat_message_histories import SQLChatMessageHistory
+import hashlib
+from itertools import islice
 
 try:
     from langchain_community.document_loaders import PyPDFLoader
@@ -16,18 +18,26 @@ from langchain.text_splitter import RecursiveCharacterTextSplitter
 # Ensure faiss-cpu and pypdf are installed
 # pip install faiss-cpu pypdf
 
-# Step 1: Load and preprocess the PDF
-pdf_path = "The-Holy-Bible-King-James-Version.pdf"
-db_name = "Holy_Bible_DB"
+# Step 1: Helper Functions
+def calculate_file_hash(file_path):
+    """Calculate the hash of a file to use as a cache key."""
+    hasher = hashlib.md5()
+    with open(file_path, 'rb') as f:
+        buf = f.read()
+        hasher.update(buf)
+    return hasher.hexdigest()
 
 def chunker(iterable, size):
     """Helper function to split iterable into smaller chunks."""
-    from itertools import islice
     it = iter(iterable)
     while chunk := list(islice(it, size)):
         yield chunk
 
-@st.cache_resource
+# Step 2: Load and preprocess the PDF
+pdf_path = "The-Holy-Bible-King-James-Version.pdf"
+db_name = "Holy_Bible_DB"
+
+@st.cache_data
 def process_and_index_pdf(pdf_path, db_name, embedding_model, embedding_url, batch_size=10):
     """Extracts text from the PDF, splits it into chunks, and builds the FAISS index in batches."""
     loader = PyPDFLoader(pdf_path)
@@ -51,7 +61,7 @@ def process_and_index_pdf(pdf_path, db_name, embedding_model, embedding_url, bat
         batch_embeddings = embeddings.embed_documents([doc.page_content for doc in batch])
         vector_store.add_texts(
             texts=[doc.page_content for doc in batch],
-            metadatas=[doc.metadata for doc in batch],
+            metadatas=[doc.metadata if isinstance(doc.metadata, dict) else {} for doc in batch],
             embeddings=batch_embeddings,
         )
 
@@ -60,7 +70,7 @@ def process_and_index_pdf(pdf_path, db_name, embedding_model, embedding_url, bat
 
 # Initialize or rebuild FAISS index
 embedding_model = 'granite3.1-dense:latest'
-embedding_url = 'https://holy-bible-chatbot-seevyemifg8x6dzwt3ey4n.streamlit.app'
+embedding_url = 'http://localhost:11434'
 
 try:
     vector_store = FAISS.load_local(
@@ -73,7 +83,7 @@ except Exception as e:
     st.write(f"Reindexing due to: {e}")
     vector_store = process_and_index_pdf(pdf_path, db_name, embedding_model, embedding_url)
 
-# Step 2: Define Prompt and Chat History
+# Step 3: Define Prompt and Chat History
 prompt_template = """
     You are an assistant for question-answering tasks and an expert on the Holy Bible. Provide answers in concise bullet points (5 to 7) with sources cited.
     
@@ -84,12 +94,10 @@ prompt_template = """
 """
 prompt = ChatPromptTemplate.from_template(prompt_template)
 
-# Step 3: Initialize ChatOllama and History
 def get_session_history(session_id):
     return SQLChatMessageHistory(session_id, "sqlite:///chat_history.db")
 
 llm = ChatOllama(model=embedding_model, base_url=embedding_url)
-
 rag_chain = prompt | llm | StrOutputParser()
 
 runnable_with_history = RunnableWithMessageHistory(
@@ -117,19 +125,22 @@ if query:
         st.markdown(query)
 
     try:
-        docs = vector_store.search(query=query, k=5, search_type="similarity")
-        context = "\n\n".join([doc.page_content for doc in docs])
+        if vector_store is None:
+            st.error("The FAISS vector store is unavailable. Please try re-indexing the data.")
+        else:
+            docs = vector_store.search(query=query, k=5, search_type="similarity")
+            context = "\n\n".join([doc.page_content for doc in docs])
 
-        with st.chat_message("assistant"):
-            response = st.write_stream(
-                runnable_with_history.stream(
-                    {'question': query, 'context': context},
-                    config={'configurable': {'session_id': 'user_id'}}
+            with st.chat_message("assistant"):
+                response = st.write_stream(
+                    runnable_with_history.stream(
+                        {'question': query, 'context': context},
+                        config={'configurable': {'session_id': 'user_id'}}
+                    )
                 )
-            )
-            st.session_state.chat_history.append(
-                {'role': 'assistant', 'content': response}
-            )
+                st.session_state.chat_history.append(
+                    {'role': 'assistant', 'content': response}
+                )
     except AssertionError as e:
         st.error("Error: Embedding dimensions do not match. Please re-index the data.")
         st.write(f"Details: {e}")
