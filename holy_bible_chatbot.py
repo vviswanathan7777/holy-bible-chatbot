@@ -60,7 +60,7 @@ def process_and_index_pdf(pdf_path, db_name, embedding_model, embedding_url, bat
 
 # Initialize or rebuild FAISS index
 embedding_model = 'granite3.1-dense:latest'
-embedding_url = 'http://localhost:11434'
+embedding_url = 'https://holy-bible-chatbot-seevyemifg8x6dzwt3ey4n.streamlit.app'
 
 try:
     vector_store = FAISS.load_local(
