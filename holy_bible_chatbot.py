@@ -45,7 +45,7 @@ def process_and_index_pdf(pdf_path, db_name, embedding_model, embedding_url):
 
 # Step 2: Setup embedding model and service URL
 EMBEDDING_MODEL = 'granite3.1-dense:latest'
-EMBEDDING_URL = 'http://<your-remote-service-url>'  # Replace this with your public URL
+EMBEDDING_URL = 'https://holy-bible-chatbot-seevyemifg8x6dzwt3ey4n.streamlit.app'  # Replace this with your public URL
 
 # Initialize or rebuild FAISS index
 try:
