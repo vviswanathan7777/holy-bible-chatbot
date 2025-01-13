@@ -1,8 +1,9 @@
-langchain
-langchain-ollama
-langchain-community
-streamlit
-faiss-cpu
-tiktoken
-sqlalchemy
-pypdf
+langchain>=0.3.29
+langchain-ollama>=0.2.2
+langchain-community>=0.3.14
+streamlit>=1.41.1
+faiss-cpu>=1.9.0.post1
+tiktoken>=0.8.0
+sqlalchemy>=2.0.37
+pypdf>=5.1.0
+
