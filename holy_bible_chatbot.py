@@ -20,9 +20,16 @@ from langchain.text_splitter import RecursiveCharacterTextSplitter
 pdf_path = "The-Holy-Bible-King-James-Version.pdf"
 db_name = "Holy_Bible_DB"
 
+def chunker(iterable, size):
+    """Helper function to split iterable into smaller chunks."""
+    from itertools import islice
+    it = iter(iterable)
+    while chunk := list(islice(it, size)):
+        yield chunk
+
 @st.cache_resource
-def process_and_index_pdf(pdf_path, db_name, embedding_model, embedding_url):
-    """Extracts text from the PDF, splits it into chunks, and builds the FAISS index."""
+def process_and_index_pdf(pdf_path, db_name, embedding_model, embedding_url, batch_size=10):
+    """Extracts text from the PDF, splits it into chunks, and builds the FAISS index in batches."""
     loader = PyPDFLoader(pdf_path)
     documents = loader.load()
 
@@ -33,36 +40,40 @@ def process_and_index_pdf(pdf_path, db_name, embedding_model, embedding_url):
     )
     chunks = text_splitter.split_documents(documents)
 
-    # Create embeddings and index them in FAISS
+    # Create embeddings in batches and index them in FAISS
     embeddings = OllamaEmbeddings(
         model=embedding_model,
-        base_url=embedding_url,
+        base_url=embedding_url
     )
-    vector_store = FAISS.from_documents(chunks, embeddings)
-    vector_store.save_local(db_name)
+    vector_store = FAISS()  # Initialize an empty FAISS vector store
 
+    for batch in chunker(chunks, batch_size):
+        batch_embeddings = embeddings.embed_documents([doc.page_content for doc in batch])
+        vector_store.add_texts(
+            texts=[doc.page_content for doc in batch],
+            metadatas=[doc.metadata for doc in batch],
+            embeddings=batch_embeddings,
+        )
+
+    vector_store.save_local(db_name)
     return vector_store
 
-# Step 2: Setup embedding model and service URL
-EMBEDDING_MODEL = 'granite3.1-dense:latest'
-EMBEDDING_URL = 'https://holy-bible-chatbot-seevyemifg8x6dzwt3ey4n.streamlit.app'  # Replace this with your public URL
-
 # Initialize or rebuild FAISS index
+embedding_model = 'granite3.1-dense:latest'
+embedding_url = 'http://localhost:11434'
+
 try:
     vector_store = FAISS.load_local(
-        db_name,
-        embeddings=OllamaEmbeddings(
-            model=EMBEDDING_MODEL,
-            base_url=EMBEDDING_URL,
-        ),
-        allow_dangerous_deserialization=True,
+        db_name, embeddings=OllamaEmbeddings(
+            model=embedding_model, base_url=embedding_url
+        ), allow_dangerous_deserialization=True
     )
 except Exception as e:
     st.warning("Indexing PDF file... This may take a few minutes.")
     st.write(f"Reindexing due to: {e}")
-    vector_store = process_and_index_pdf(pdf_path, db_name, EMBEDDING_MODEL, EMBEDDING_URL)
+    vector_store = process_and_index_pdf(pdf_path, db_name, embedding_model, embedding_url)
 
-# Step 3: Define Prompt and Chat History
+# Step 2: Define Prompt and Chat History
 prompt_template = """
     You are an assistant for question-answering tasks and an expert on the Holy Bible. Provide answers in concise bullet points (5 to 7) with sources cited.
     
@@ -73,63 +84,55 @@ prompt_template = """
 """
 prompt = ChatPromptTemplate.from_template(prompt_template)
 
-# Step 4: Initialize ChatOllama and History
+# Step 3: Initialize ChatOllama and History
 def get_session_history(session_id):
     return SQLChatMessageHistory(session_id, "sqlite:///chat_history.db")
 
-try:
-    llm = ChatOllama(model=EMBEDDING_MODEL, base_url=EMBEDDING_URL)
-except Exception as e:
-    st.error("Error initializing the language model.")
-    st.write(f"Details: {e}")
-    llm = None
+llm = ChatOllama(model=embedding_model, base_url=embedding_url)
 
-if llm:
-    rag_chain = prompt | llm | StrOutputParser()
+rag_chain = prompt | llm | StrOutputParser()
 
-    runnable_with_history = RunnableWithMessageHistory(
-        rag_chain, get_session_history,
-        input_messages_key='question',
-        history_messages_key='history'
-    )
+runnable_with_history = RunnableWithMessageHistory(
+    rag_chain, get_session_history,
+    input_messages_key='question',
+    history_messages_key='history'
+)
 
-    # Step 5: Streamlit App
-    st.title("Holy Bible Chatbot v0.2")
+# Step 4: Streamlit App
+st.title("Holy Bible Chatbot v0.2")
 
-    if "chat_history" not in st.session_state:
-        st.session_state.chat_history = []
+if "chat_history" not in st.session_state:
+    st.session_state.chat_history = []
 
-    for message in st.session_state.chat_history:
-        with st.chat_message(message['role']):
-            st.markdown(message['content'])
+for message in st.session_state.chat_history:
+    with st.chat_message(message['role']):
+        st.markdown(message['content'])
 
-    query = st.chat_input("Ask your Holy Bible question?")
+query = st.chat_input("Ask your Holy Bible question?")
 
-    if query:
-        st.session_state.chat_history.append({'role': 'user', 'content': query})
+if query:
+    st.session_state.chat_history.append({'role': 'user', 'content': query})
 
-        with st.chat_message("user"):
-            st.markdown(query)
+    with st.chat_message("user"):
+        st.markdown(query)
 
-        try:
-            docs = vector_store.search(query=query, k=5, search_type="similarity")
-            context = "\n\n".join([doc.page_content for doc in docs])
+    try:
+        docs = vector_store.search(query=query, k=5, search_type="similarity")
+        context = "\n\n".join([doc.page_content for doc in docs])
 
-            with st.chat_message("assistant"):
-                response = st.write_stream(
-                    runnable_with_history.stream(
-                        {'question': query, 'context': context},
-                        config={'configurable': {'session_id': 'user_id'}}
-                    )
+        with st.chat_message("assistant"):
+            response = st.write_stream(
+                runnable_with_history.stream(
+                    {'question': query, 'context': context},
+                    config={'configurable': {'session_id': 'user_id'}}
                 )
-                st.session_state.chat_history.append(
-                    {'role': 'assistant', 'content': response}
-                )
-        except AssertionError as e:
-            st.error("Error: Embedding dimensions do not match. Please re-index the data.")
-            st.write(f"Details: {e}")
-        except Exception as e:
-            st.error("An unexpected error occurred while processing your query.")
-            st.write(f"Details: {e}")
-else:
-    st.error("The chatbot cannot start because the language model initialization failed.")
+            )
+            st.session_state.chat_history.append(
+                {'role': 'assistant', 'content': response}
+            )
+    except AssertionError as e:
+        st.error("Error: Embedding dimensions do not match. Please re-index the data.")
+        st.write(f"Details: {e}")
+    except Exception as e:
+        st.error("An unexpected error occurred while processing your query.")
+        st.write(f"Details: {e}")
