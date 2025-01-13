@@ -1,3 +1,5 @@
+from langchain.docstore import InMemoryDocstore
+from faiss import IndexFlatL2
 from langchain_ollama import OllamaEmbeddings, ChatOllama
 from langchain_community.vectorstores import FAISS
 import streamlit as st
@@ -7,13 +9,12 @@ from langchain_core.output_parsers import StrOutputParser
 from langchain_community.chat_message_histories import SQLChatMessageHistory
 from langchain_community.document_loaders import PyPDFLoader
 from langchain.text_splitter import RecursiveCharacterTextSplitter
-from langchain_core.document_store import InMemoryDocstore
-from faiss import IndexFlatL2
 
 # Path and database variables
 pdf_path = "The-Holy-Bible-King-James-Version.pdf"
 db_name = "Holy_Bible_DB"
 
+# Helper function
 def chunker(iterable, size):
     """Helper function to split iterable into smaller chunks."""
     from itertools import islice
@@ -74,65 +75,3 @@ except Exception as e:
     st.warning("Indexing PDF file... This may take a few minutes.")
     st.write(f"Reindexing due to: {e}")
     vector_store = process_and_index_pdf(pdf_path, db_name, embedding_model, embedding_url)
-
-# Define Prompt and Chat History
-prompt_template = """
-    You are an assistant for question-answering tasks and an expert on the Holy Bible. Provide answers in concise bullet points (5 to 7) with sources cited.
-    
-    If the question is outside the scope of the Holy Bible, respond with: "I don't know".
-    
-    Question: {question}
-    Answer:
-"""
-prompt = ChatPromptTemplate.from_template(prompt_template)
-
-def get_session_history(session_id):
-    return SQLChatMessageHistory(session_id, "sqlite:///chat_history.db")
-
-llm = ChatOllama(model=embedding_model, base_url=embedding_url)
-rag_chain = prompt | llm | StrOutputParser()
-
-runnable_with_history = RunnableWithMessageHistory(
-    rag_chain, get_session_history,
-    input_messages_key='question',
-    history_messages_key='history'
-)
-
-# Streamlit App
-st.title("Holy Bible Chatbot v0.2")
-
-if "chat_history" not in st.session_state:
-    st.session_state.chat_history = []
-
-for message in st.session_state.chat_history:
-    with st.chat_message(message['role']):
-        st.markdown(message['content'])
-
-query = st.chat_input("Ask your Holy Bible question?")
-
-if query:
-    st.session_state.chat_history.append({'role': 'user', 'content': query})
-
-    with st.chat_message("user"):
-        st.markdown(query)
-
-    try:
-        docs = vector_store.search(query=query, k=5, search_type="similarity")
-        context = "\n\n".join([doc.page_content for doc in docs])
-
-        with st.chat_message("assistant"):
-            response = st.write_stream(
-                runnable_with_history.stream(
-                    {'question': query, 'context': context},
-                    config={'configurable': {'session_id': 'user_id'}}
-                )
-            )
-            st.session_state.chat_history.append(
-                {'role': 'assistant', 'content': response}
-            )
-    except AssertionError as e:
-        st.error("Error: Embedding dimensions do not match. Please re-index the data.")
-        st.write(f"Details: {e}")
-    except Exception as e:
-        st.error("An unexpected error occurred while processing your query.")
-        st.write(f"Details: {e}")
